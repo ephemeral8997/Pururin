@@ -7,6 +7,8 @@ import os
 import pkgutil
 import webserver
 
+webserver.start_web_server_in_thread()
+
 load_dotenv()
 
 logger = mylogger.getLogger(__name__)
@@ -70,8 +72,11 @@ class Pururin(commands.Bot):
 
 async def main():
     bot = Pururin()
+    token = os.getenv("TOKEN")
+    if not token:
+        raise RuntimeError("please provide token in .env")
     try:
-        await bot.start(os.getenv("TOKEN"))  # type: ignore
+        await bot.start(token)
     except KeyboardInterrupt:
         pass
     except discord.LoginFailure:
