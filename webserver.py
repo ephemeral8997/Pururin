@@ -41,6 +41,3 @@ def start_web_server_in_thread():
     t = threading.Thread(target=start_web_server, daemon=True)
     t.start()
     return t
-
-
-start_web_server_in_thread()
