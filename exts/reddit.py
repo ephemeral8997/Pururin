@@ -12,7 +12,7 @@ REDDIT_BASE = f"https://www.reddit.com/r/{SUBREDDIT}"
 REDDIT_USER_AGENT = "DiscordBot:NHKFeed:v1.0 (by /u/ephemeral8997)"
 
 CHANNEL_ID = int(os.getenv("REDDIT_WELCOME_CHANNEL_ID", 0))
-WEBHOOK_NAME = "r/WelcomeToTheNHK"
+WEBHOOK_NAME = os.getenv("REDDIT_WEBHOOK_NAME", "r/WelcomeToTheNHK")
 
 RISING_SCORE_THRESHOLD = int(os.getenv("REDDIT_RISING_SCORE", "50"))
 
