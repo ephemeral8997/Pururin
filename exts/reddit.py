@@ -175,7 +175,7 @@ class WelcomeNHKRedFeed(commands.Cog):
             logger.error("Unexpected Reddit JSON structure: %s", exc)
             return
 
-        for child in reversed(children):
+        for child in children:
             post = child["data"]
             post_id = post.get("id")
             if not post_id or post_id in self._seen_ids:
