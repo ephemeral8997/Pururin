@@ -28,7 +28,7 @@ class Pururin(commands.Bot):
         )
 
     async def setup_hook(self) -> None:
-        modules = list(pkgutil.iter_modules(["exts"], prefix="exts."))
+        modules = list(_ for _ in pkgutil.iter_modules(["exts"], prefix="exts.") if not _.name.startswith("_"))
 
         tasks = []
         for module in modules:
