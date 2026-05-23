@@ -1,4 +1,5 @@
 import os
+import aiohttp
 import discord
 from discord.ext import commands, tasks
 import mylogger
@@ -16,7 +17,8 @@ CHANNEL_ID = int(os.getenv("WIKI_RC_CHANNEL_ID", "0"))
 WEBHOOK_NAME = os.getenv("WIKI_RC_WEBHOOK_NAME", "f/WelcomeToTheNHK")
 
 HIDE_MINOR = os.getenv("WIKI_RC_HIDE_MINOR", "false").lower() in ("1", "true", "yes")
-HIDE_BOTS = os.getenv("WIKI_RC_HIDE_BOTS", "false").lower() in ("1", "true", "yes")
+
+HIDE_BOTS = int(os.getenv("WIKI_RC_HIDE_BOTS", "0")) # TBC
 
 IGNORE_PAGES = {
     t.strip().replace("_", " ").title()
@@ -25,37 +27,10 @@ IGNORE_PAGES = {
 }
 
 
-def _build_rcshow() -> str | None:
-    filters = []
-    if HIDE_MINOR:
-        filters.append("!minor")
-    if HIDE_BOTS:
-        filters.append("!bot")
-    return "|".join(filters) if filters else None
-
-
-# mediawiki actions
-LOG_ACTION_LABELS: dict[tuple[str, str], str] = {
-    ("delete", "delete"): "🗑️ Page deleted",
-    ("delete", "restore"): "♻️ Page restored",
-    ("move", "move"): "➡️ Page moved",
-    ("move", "move_redir"): "➡️ Page moved (over redirect)",
-    ("protect", "protect"): "🔒 Page protected",
-    ("protect", "modify"): "🔒 Protection modified",
-    ("protect", "unprotect"): "🔓 Page unprotected",
-    ("block", "block"): "🚫 User blocked",
-    ("block", "unblock"): "✅ User unblocked",
-    ("upload", "upload"): "📁 File uploaded",
-    ("upload", "overwrite"): "📁 File re-uploaded",
-    ("rights", "rights"): "🛡️ User rights changed",
-    ("import", "import"): "📥 Page imported",
-}
-
-
 class Fandom(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.last_rcid: int | None = None
+        self.last_rcid = None
         self.session_manager = utils.SessionManager()
         self.poll_changes.start()
 
@@ -72,30 +47,13 @@ class Fandom(commands.Cog):
         if channel is None:
             return
 
-        params: dict[str, str] = {
+        params = {
             "action": "query",
             "list": "recentchanges",
-            # ids        – rcid, revid, old_revid
-            # title      – page title
-            # user       – editor username / IP
-            # comment    – edit summary
-            # timestamp  – ISO 8601 timestamp
-            # sizes      – oldlen / newlen for byte-diff
-            # flags      – minor / bot / new / redirect
-            # tags       – applied edit tags (e.g. "Visual edit", "Reverted")
-            # loginfo    – log type & action (deletions, moves, protections …)
-            # redirect   – whether the page is a redirect
-            "rcprop": "ids|title|user|comment|timestamp|sizes|flags|tags|loginfo|redirect",
-            # 5 changes per poll
-            "rclimit": "5",
-            # oldest first
-            "rcdir": "newer",
+            "rcprop": "ids|title|user|comment|timestamp|sizes|flags",
+            "rclimit": "1",
             "format": "json",
         }
-
-        rcshow = _build_rcshow()
-        if rcshow:
-            params["rcshow"] = rcshow
 
         headers = {"User-Agent": WIKI_USER_AGENT}
 
@@ -105,64 +63,44 @@ class Fandom(commands.Cog):
                 API_ENDPOINT, params=params, headers=headers
             ) as resp:
                 if resp.status != 200:
-                    logger.warning("Wiki API returned HTTP %s", resp.status)
                     return
                 data = await resp.json()
-        except Exception as exc:
-            logger.exception("Error fetching recent changes: %s", exc)
+        except Exception:
             return
 
-        changes: list[dict] = data.get("query", {}).get("recentchanges", [])
+        changes = data.get("query", {}).get("recentchanges", [])
         if not changes:
             return
 
-        if self.last_rcid is None:
-            self.last_rcid = changes[-1]["rcid"]  # newest (rcdir=newer → last item)
-            return
-
-        new_changes = [c for c in changes if c["rcid"] > self.last_rcid]
-        if not new_changes:
-            return
-
-        # a crash shouldn't repost
-        self.last_rcid = new_changes[-1]["rcid"]
-
-        webhook = await utils.WebhookHelper.get_or_create_webhook(channel, WEBHOOK_NAME)  # type: ignore
-
-        for change in new_changes:
-            embed = self._build_embed(change)
-            if embed is None:
-                continue
-            await webhook.send(embed=embed)
-
-    @poll_changes.before_loop
-    async def before_fetch(self):
-        await self.bot.wait_until_ready()
-
-    def _build_embed(self, change: dict) -> discord.Embed | None:
-        title: str = change.get("title", "")
-
-        # respect IGNORE_PAGES
-        if title.replace("_", " ").title() in IGNORE_PAGES:
-            logger.debug("Ignored edit to %s (WIKI_RC_IGNORE_PAGES)", title)
-            return None
-
+        change = changes[0]
         is_minor = "minor" in change
-        is_bot = "bot" in change
-        is_new = "new" in change
-        is_redirect = "redirect" in change
-        is_log = change.get("type") == "log"
 
-        revid = change.get("revid", 0)
-        old_revid = change.get("old_revid", 0)
+        if HIDE_MINOR and is_minor:
+            return
 
-        if is_log:
-            page_slug = title.replace(" ", "_")
-            url = f"{WIKI_BASE}/wiki/Special:Log?page={page_slug}"
-        elif old_revid:
-            url = f"{WIKI_BASE}/wiki/Special:Diff/{old_revid}/{revid}"
+        if change["title"].replace("_", " ").title() in IGNORE_PAGES:
+            logger.debug(
+                "Ignored edit to %s (in WIKI_RC_IGNORE_PAGES)", change["title"]
+            )
+            return
+
+        current_rcid = change["rcid"]
+
+        if self.last_rcid is None:
+            self.last_rcid = current_rcid
+            return
+
+        if current_rcid <= self.last_rcid:
+            return
+
+        self.last_rcid = current_rcid
+
+        revid = change.get("revid")
+        old_revid = change.get("old_revid")
+        if old_revid:
+            diff_url = f"{WIKI_BASE}/wiki/Special:Diff/{revid}/{old_revid}"
         else:
-            url = f"{WIKI_BASE}/wiki/Special:Diff/{revid}"
+            diff_url = f"{WIKI_BASE}/wiki/Special:Diff/{revid}"
 
         size_diff = ""
         if "oldlen" in change and "newlen" in change:
@@ -170,64 +108,38 @@ class Fandom(commands.Cog):
             sign = "+" if diff_val >= 0 else ""
             size_diff = f"{sign}{diff_val} bytes"
 
-        if is_log:
-            color = discord.Color.purple()
-        elif revid == 0:
+        color = discord.Color.blue()
+        if revid == 0:
             color = discord.Color.red()
-        elif is_new:
+        elif "new" in change:
             color = discord.Color.green()
         elif is_minor:
             color = discord.Color.gold()
-        else:
-            color = discord.Color.blue()
-
-        display_title = title
-        if is_redirect:
-            display_title = f"↪ {title} (redirect)"
-
-        summary = change.get("comment") or "(no summary)"
-
-        log_label: str | None = None
-        if is_log:
-            log_type = change.get("logtype", "")
-            log_action = change.get("logaction", "")
-            log_label = LOG_ACTION_LABELS.get(
-                (log_type, log_action),
-                f"{log_type}/{log_action}",
-            )
-
-        tags: list[str] = change.get("tags", [])
 
         embed = discord.Embed(
-            title=display_title,
-            url=url,
-            description=summary,
+            title=change["title"],
+            url=diff_url,
+            description=change.get("comment", "(no summary)"),
             color=color,
             timestamp=discord.utils.parse_time(change["timestamp"]),
         )
-
-        author_name = change.get("user", "Unknown")
-        if is_bot:
-            author_name = f"🤖 {author_name}"
-        embed.set_author(name=author_name)
-
-        if log_label:
-            embed.add_field(name="Log Action", value=log_label, inline=True)
-
+        embed.set_author(name=change["user"])
         if size_diff:
             embed.add_field(name="Size Change", value=size_diff, inline=True)
+        embed.add_field(name="Revision ID", value=str(revid), inline=True)
+        embed.set_footer(text=f"rcid:{current_rcid}")
 
-        if not is_log:
-            embed.add_field(name="Revision ID", value=str(revid), inline=True)
+        webhook = await utils.WebhookHelper.get_or_create_webhook(channel, WEBHOOK_NAME)  # type: ignore
+        await webhook.send(embed=embed)
 
-        if tags:
-            embed.add_field(name="Tags", value=", ".join(tags), inline=False)
-
-        embed.set_footer(text=f"rcid:{change['rcid']}")
-        return embed
+    @poll_changes.before_loop
+    async def before_fetch(self):
+        await self.bot.wait_until_ready()
 
     async def page_exists(self, page_title: str) -> bool:
+        """Check if a wiki page exists using the MediaWiki API."""
         params = {"action": "query", "titles": page_title, "format": "json"}
+
         try:
             session = await self.session_manager.get_session()
             async with session.get(API_ENDPOINT, params=params) as response:
@@ -237,20 +149,24 @@ class Fandom(commands.Cog):
                     return "-1" not in pages
         except Exception:
             pass
+
         return False
 
     def extract_references(self, content: str) -> list[str]:
-        matches = re.findall(r"\[\[([^\[\]]+)\]\]", content)
-        seen: set[str] = set()
-        unique: list[str] = []
+        """Extract all [[...]] references from message content."""
+        pattern = r"\[\[([^\[\]]+)\]\]"
+        matches = re.findall(pattern, content)
+
+        seen = set()
+        unique = []
         for match in matches:
-            key = match.lower()
-            if key not in seen:
-                seen.add(key)
+            if match.lower() not in seen:
+                seen.add(match.lower())
                 unique.append(match)
         return unique
 
     def format_page_title(self, title: str) -> str:
+        """Format title for URL (replace spaces with underscores)."""
         return title.strip().replace(" ", "_")
 
     @commands.Cog.listener()
@@ -259,14 +175,15 @@ class Fandom(commands.Cog):
             return
 
         references = self.extract_references(message.content)
+
         if not references:
             return
 
-        valid_links: list[str] = []
+        valid_links = []
         for ref in references:
-            formatted = self.format_page_title(ref)
-            if await self.page_exists(formatted):
-                url = f"{WIKI_BASE}/wiki/{formatted}"
+            formatted_title = self.format_page_title(ref)
+            if await self.page_exists(formatted_title):
+                url = f"{WIKI_BASE}/wiki/{formatted_title}"
                 valid_links.append(f"• **{ref}**: <{url}>")
 
         if valid_links:
