@@ -4,6 +4,7 @@ import discord
 from discord.ext import commands, tasks
 import mylogger
 import utils
+from datetime import datetime, timezone
 
 logger = mylogger.getLogger(__name__)
 
@@ -60,7 +61,11 @@ def _build_embed(post: dict, *, alert: bool = False) -> discord.Embed:
         url=f"https://reddit.com{post['permalink']}",
         description=description or None,
         color=color,
-        timestamp=discord.utils.utcnow(),
+        timestamp=(
+            datetime.fromtimestamp(post["created_utc"], tz=timezone.utc)
+            if post.get("created_utc")
+            else discord.utils.utcnow()
+        ),
     )
 
     ratio = post.get("upvote_ratio", 0)
