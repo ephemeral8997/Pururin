@@ -6,6 +6,7 @@ import asyncio
 import os
 import pkgutil
 import webserver
+import exts
 
 webserver.start_web_server_in_thread()
 
@@ -28,10 +29,15 @@ class Pururin(commands.Bot):
         )
 
     async def setup_hook(self) -> None:
-        modules = list(_ for _ in pkgutil.iter_modules(["exts"], prefix="exts.") if not _.name.startswith("_"))
+        modules = [
+            m
+            for m in pkgutil.iter_modules(exts.__path__, exts.__name__ + ".")
+            if not m.name.rsplit(".", 1)[-1].startswith("_")
+        ]
 
         tasks = []
         for module in modules:
+            print(module.name.startswith("_"), module.name)
             task = asyncio.create_task(self._load_extension_safe(module.name))
             tasks.append(task)
 
