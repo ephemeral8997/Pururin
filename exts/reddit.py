@@ -15,6 +15,7 @@ CHANNEL_ID = int(os.getenv("REDDIT_WELCOME_CHANNEL_ID", 0))
 WEBHOOK_NAME = os.getenv("REDDIT_WEBHOOK_NAME", "r/WelcomeToTheNHK")
 
 RISING_SCORE_THRESHOLD = int(os.getenv("REDDIT_RISING_SCORE", "50"))
+SEED_LIMIT = int(os.getenv("REDDIT_SEED_LIMIT", "25"))
 
 SCORE_CHECK_INTERVAL = int(os.getenv("REDDIT_SCORE_CHECK_MINUTES", "30"))
 
@@ -193,6 +194,23 @@ class WelcomeNHKRedFeed(commands.Cog):
     @fetch_new_posts.before_loop
     async def before_fetch_new(self):
         await self.bot.wait_until_ready()
+        data = await self._fetch_json(f"{REDDIT_BASE}/new.json?limit={SEED_LIMIT}")
+        if not data:
+            return
+
+        try:
+            for child in data["data"]["children"]:
+                post = child["data"]
+                post_id = post.get("id")
+                if post_id:
+                    self._seen_ids.add(post_id)
+                    self._tracked[post_id] = {
+                        "post": post,
+                        "score": post.get("ups", 0),
+                        "alerted": False,
+                    }
+        except (KeyError, IndexError) as exc:
+            logger.error("Failed to seed seen IDs: %s", exc)
 
     @tasks.loop(minutes=SCORE_CHECK_INTERVAL)
     async def check_rising_scores(self):
