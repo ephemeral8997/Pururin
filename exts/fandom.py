@@ -1,5 +1,4 @@
 import os
-import aiohttp
 import discord
 from discord.ext import commands, tasks
 import mylogger
@@ -8,6 +7,7 @@ import utils
 
 logger = mylogger.getLogger(__name__)
 
+# -------------------------- CONFIGURATION --------------------------
 API_ENDPOINT = "https://welcometothenhk.fandom.com/api.php"
 WIKI_BASE = "https://welcometothenhk.fandom.com"
 WIKI_USER_AGENT = "WelcomeToTheNHK_DiscordBot/1.0 (Contact: ephemeral8997)"
@@ -17,8 +17,6 @@ CHANNEL_ID = int(os.getenv("WIKI_RC_CHANNEL_ID", "0"))
 WEBHOOK_NAME = os.getenv("WIKI_RC_WEBHOOK_NAME", "f/WelcomeToTheNHK")
 
 HIDE_MINOR = os.getenv("WIKI_RC_HIDE_MINOR", "false").lower() in ("1", "true", "yes")
-
-HIDE_BOTS = int(os.getenv("WIKI_RC_HIDE_BOTS", "0")) # TBC
 
 IGNORE_PAGES = {
     t.strip().replace("_", " ").title()
@@ -41,10 +39,12 @@ class Fandom(commands.Cog):
     @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
     async def poll_changes(self):
         if CHANNEL_ID == 0:
+            logger.warning("CHANNEL_ID is not set — skipping wiki poll.")
             return
 
         channel = self.bot.get_channel(CHANNEL_ID)
-        if channel is None:
+        if not isinstance(channel, discord.TextChannel):
+            logger.warning("Could not find channel with ID %s", CHANNEL_ID)
             return
 
         params = {
@@ -63,9 +63,11 @@ class Fandom(commands.Cog):
                 API_ENDPOINT, params=params, headers=headers
             ) as resp:
                 if resp.status != 200:
+                    logger.error("API returned status %s", resp.status)
                     return
                 data = await resp.json()
-        except Exception:
+        except Exception as e:
+            logger.error("Error fetching recent changes: %s", str(e))
             return
 
         changes = data.get("query", {}).get("recentchanges", [])
@@ -78,10 +80,9 @@ class Fandom(commands.Cog):
         if HIDE_MINOR and is_minor:
             return
 
-        if change["title"].replace("_", " ").title() in IGNORE_PAGES:
-            logger.debug(
-                "Ignored edit to %s (in WIKI_RC_IGNORE_PAGES)", change["title"]
-            )
+        page_title = change["title"].replace("_", " ").title()
+        if page_title in IGNORE_PAGES:
+            logger.debug("Ignored edit to %s (in ignore list)", change["title"])
             return
 
         current_rcid = change["rcid"]
@@ -95,6 +96,7 @@ class Fandom(commands.Cog):
 
         self.last_rcid = current_rcid
 
+        # build diff URL
         revid = change.get("revid")
         old_revid = change.get("old_revid")
         if old_revid:
@@ -108,28 +110,30 @@ class Fandom(commands.Cog):
             sign = "+" if diff_val >= 0 else ""
             size_diff = f"{sign}{diff_val} bytes"
 
-        color = discord.Color.blue()
+        # choose embed color based on change type
         if revid == 0:
-            color = discord.Color.red()
+            color = discord.Color.red()  # Deletion
         elif "new" in change:
-            color = discord.Color.green()
+            color = discord.Color.green()  # New page
         elif is_minor:
-            color = discord.Color.gold()
+            color = discord.Color.gold()  # Minor edit
+        else:
+            color = discord.Color.blue()  # Normal edit
 
         embed = discord.Embed(
             title=change["title"],
             url=diff_url,
-            description=change.get("comment", "(no summary)"),
+            description=change.get("comment", "*No edit summary provided*"),
             color=color,
             timestamp=discord.utils.parse_time(change["timestamp"]),
         )
         embed.set_author(name=change["user"])
         if size_diff:
-            embed.add_field(name="Size Change", value=size_diff, inline=True)
-        embed.add_field(name="Revision ID", value=str(revid), inline=True)
-        embed.set_footer(text=f"rcid:{current_rcid}")
+            embed.add_field(name="📏 Size Change", value=size_diff, inline=True)
+        embed.add_field(name="🔖 Revision ID", value=str(revid), inline=True)
+        embed.set_footer(text=f"rcid: {current_rcid} | Fandom Wiki")
 
-        webhook = await utils.WebhookHelper.get_or_create_webhook(channel, WEBHOOK_NAME)  # type: ignore
+        webhook = await utils.WebhookHelper.get_or_create_webhook(channel, WEBHOOK_NAME)
         await webhook.send(embed=embed)
 
     @poll_changes.before_loop
@@ -137,7 +141,6 @@ class Fandom(commands.Cog):
         await self.bot.wait_until_ready()
 
     async def page_exists(self, page_title: str) -> bool:
-        """Check if a wiki page exists using the MediaWiki API."""
         params = {"action": "query", "titles": page_title, "format": "json"}
 
         try:
@@ -147,26 +150,27 @@ class Fandom(commands.Cog):
                     data = await response.json()
                     pages = data.get("query", {}).get("pages", {})
                     return "-1" not in pages
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error("Error checking page existence: %s", str(e))
 
         return False
 
-    def extract_references(self, content: str) -> list[str]:
-        """Extract all [[...]] references from message content."""
+    @staticmethod
+    def extract_references(content: str) -> list[str]:
         pattern = r"\[\[([^\[\]]+)\]\]"
         matches = re.findall(pattern, content)
 
         seen = set()
-        unique = []
-        for match in matches:
-            if match.lower() not in seen:
-                seen.add(match.lower())
-                unique.append(match)
-        return unique
+        unique_refs = []
+        for ref in matches:
+            lower_ref = ref.lower()
+            if lower_ref not in seen:
+                seen.add(lower_ref)
+                unique_refs.append(ref)
+        return unique_refs
 
-    def format_page_title(self, title: str) -> str:
-        """Format title for URL (replace spaces with underscores)."""
+    @staticmethod
+    def format_page_title(title: str) -> str:
         return title.strip().replace(" ", "_")
 
     @commands.Cog.listener()
@@ -175,7 +179,6 @@ class Fandom(commands.Cog):
             return
 
         references = self.extract_references(message.content)
-
         if not references:
             return
 
@@ -187,7 +190,7 @@ class Fandom(commands.Cog):
                 valid_links.append(f"• **{ref}**: <{url}>")
 
         if valid_links:
-            response = "**Wiki Pages Found:**\n" + "\n".join(valid_links)
+            response = "**📚 Wiki Pages Found:**\n" + "\n".join(valid_links)
             await message.reply(response, mention_author=False)
 
 
