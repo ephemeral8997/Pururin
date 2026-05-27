@@ -104,34 +104,35 @@ class Fandom(commands.Cog):
         else:
             diff_url = f"{WIKI_BASE}/wiki/Special:Diff/{revid}"
 
-        size_diff = ""
+        size_diff = None
         if "oldlen" in change and "newlen" in change:
             diff_val = change["newlen"] - change["oldlen"]
             sign = "+" if diff_val >= 0 else ""
             size_diff = f"{sign}{diff_val} bytes"
 
-        # choose embed color based on change type
         if revid == 0:
-            color = discord.Color.red()  # Deletion
+            color = discord.Color.red()
         elif "new" in change:
-            color = discord.Color.green()  # New page
+            color = discord.Color.green()
         elif is_minor:
-            color = discord.Color.gold()  # Minor edit
+            color = discord.Color.gold()
         else:
-            color = discord.Color.blue()  # Normal edit
+            color = discord.Color.blue()
+
+        description = change.get("comment", "").strip() or None
 
         embed = discord.Embed(
             title=change["title"],
             url=diff_url,
-            description=change.get("comment", "*No edit summary provided*"),
+            description=description,
             color=color,
             timestamp=discord.utils.parse_time(change["timestamp"]),
         )
-        embed.set_author(name=change["user"])
+
         if size_diff:
-            embed.add_field(name="📏 Size Change", value=size_diff, inline=True)
-        embed.add_field(name="🔖 Revision ID", value=str(revid), inline=True)
-        embed.set_footer(text=f"rcid: {current_rcid} | Fandom Wiki")
+            embed.add_field(name="Size Change", value=size_diff, inline=True)
+
+        embed.set_footer(text=f"Edited by {change['user']}")
 
         webhook = await utils.WebhookHelper.get_or_create_webhook(channel, WEBHOOK_NAME)
         await webhook.send(embed=embed)

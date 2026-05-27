@@ -2,7 +2,6 @@ import os
 import re
 import discord
 from discord.ext import commands, tasks
-import aiohttp
 import mylogger
 import utils
 
@@ -63,17 +62,24 @@ class WelcomeNHKFeed(commands.Cog):
             logger.warning(f"Channel {self.channel_id} not found or inaccessible.")
             return
 
+        flags = ""
+        if post_data.get("over_18"):
+            flags += "🔞 "
+        if post_data.get("stickied"):
+            flags += "📌 "
+
+        title = f"{flags}{post_data.get('title', 'No Title')}"
+
+        description = post_data.get("selftext", "").strip() or None
+
         embed = discord.Embed(
-            title=post_data.get("title", "No Title"),
+            title=title,
             url=f"https://reddit.com{post_data.get('permalink', '')}",
-            description=utils.truncate_text(
-                post_data.get("selftext", "") or "No description provided."
-            ),
+            description=utils.truncate_text(description) if description else None,
             color=discord.Color.orange(),
             timestamp=discord.utils.utcnow(),
         )
 
-        # Reddit icon as thumbnail
         embed.set_thumbnail(
             url="https://www.redditstatic.com/desktop2x/img/favicon/apple-icon-57x57.png"
         )
@@ -85,20 +91,10 @@ class WelcomeNHKFeed(commands.Cog):
                 _, fname = match.groups()
                 embed.add_field(name="Flair", value=fname.strip(), inline=True)
 
-        # statistics
-        embed.add_field(
-            name="Votes",
-            value=f"⬆️ {post_data.get('ups', 0)} | ⬇️ {post_data.get('downs', 0)} | Score: {post_data.get('score', 0)}",
-            inline=False,
-        )
-        embed.add_field(
-            name="Comments", value=str(post_data.get("num_comments", 0)), inline=True
-        )
-        embed.add_field(
-            name="Flags",
-            value=f"NSFW: {'🔞 Yes' if post_data.get('over_18') else '✅ No'} | Stickied: {'📌 Yes' if post_data.get('stickied') else '❌ No'}",
-            inline=False,
-        )
+        score = post_data.get("score", 0)
+        comments = post_data.get("num_comments", 0)
+        embed.add_field(name="Score", value=str(score), inline=True)
+        embed.add_field(name="Comments", value=str(comments), inline=True)
 
         image_url = post_data.get("url_overridden_by_dest", "")
         if image_url and image_url.lower().endswith(
@@ -116,23 +112,19 @@ class WelcomeNHKFeed(commands.Cog):
             origin = crosspost[0]
             embed.add_field(
                 name="Crossposted from",
-                value=f"r/{origin.get('subreddit', 'unknown')} • u/{origin.get('author', 'unknown')}",
+                value=f"r/{origin.get('subreddit', 'unknown')} by u/{origin.get('author', 'unknown')}",
                 inline=False,
             )
 
         if not post_data.get("is_self", True):
             external_url = post_data.get("url", "")
             if external_url:
-                embed.set_author(
-                    name="🔗 External Link",
-                    url=external_url,
-                    icon_url="https://cdn-icons-png.flaticon.com/16/1046/1046490.png",
+                embed.add_field(
+                    name="Link", value=f"[View]({external_url})", inline=True
                 )
 
-        author_name = post_data.get("author", "unknown")
         embed.set_footer(
-            text=f"Posted by u/{author_name} • r/{post_data.get('subreddit', 'WelcomeToTheNHK')}",
-            icon_url=post_data.get("author_icon_img", None),
+            text=f"u/{post_data.get('author', 'unknown')} • r/{post_data.get('subreddit', 'WelcomeToTheNHK')}",
         )
 
         try:
