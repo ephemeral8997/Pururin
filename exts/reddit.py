@@ -118,7 +118,7 @@ class WelcomeNHKFeed(commands.Cog):
 
         if not post_data.get("is_self", True):
             external_url = post_data.get("url", "")
-            if external_url:
+            if external_url and external_url.startswith("http"):
                 embed.add_field(
                     name="Link", value=f"[View]({external_url})", inline=True
                 )
