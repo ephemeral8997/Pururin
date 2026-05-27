@@ -123,9 +123,7 @@ class WelcomeNHKFeed(commands.Cog):
                     name="Link", value=f"[View]({external_url})", inline=True
                 )
 
-        embed.set_footer(
-            text=f"u/{post_data.get('author', 'unknown')} • r/{post_data.get('subreddit', 'WelcomeToTheNHK')}",
-        )
+        embed.set_footer(text=f"u/{post_data.get('author', 'unknown')}")
 
         try:
             webhook = await utils.WebhookHelper.get_or_create_webhook(channel, self.webhook_name)  # type: ignore
