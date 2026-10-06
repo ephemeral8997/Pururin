@@ -31,7 +31,7 @@ class OnMember(commands.Cog):
         if not role:
             logger.error(f"Role {member_role_id} not found in {member.guild.name}")
             return
-        
+
         if member.guild != role.guild:
             return
 
@@ -59,7 +59,7 @@ class OnMember(commands.Cog):
 
         if not isinstance(channel, discord.TextChannel):
             return
-        
+
         if member.guild != channel.guild:
             return
 
